@@ -30,6 +30,7 @@ interface MenuBarProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  onWorldProperties: () => void;
   onAbout: () => void;
 }
 
@@ -46,6 +47,7 @@ export function MenuBar({
   onRedo,
   canUndo,
   canRedo,
+  onWorldProperties,
   onAbout,
 }: MenuBarProps) {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -86,7 +88,7 @@ export function MenuBar({
     {
       label: 'World',
       items: [
-        { label: 'World Properties...', disabled: true, onClick: () => {} },
+        { label: 'World Properties...', onClick: onWorldProperties },
         { separator: true },
         { label: 'Dimension Properties...', disabled: true, onClick: () => {} },
       ],

@@ -1,5 +1,7 @@
 # WorldPainterWeb
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/your-username/WorldPainterWeb)
+
 WorldPainterWeb is a browser-only reimagining of WorldPainter.
 
 The project goal is now explicit:

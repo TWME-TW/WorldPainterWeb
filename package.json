@@ -1,0 +1,9 @@
+{
+  "name": "worldpainterweb",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "npm --prefix app ci && npm --prefix app run build",
+    "deploy": "npm run build && wrangler deploy"
+  }
+}

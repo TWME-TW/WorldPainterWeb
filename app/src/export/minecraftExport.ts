@@ -40,10 +40,29 @@ import {
 
 // ---- Constants ----
 
-const MC_DATA_VERSION = 2730; // Java Edition 1.17.1
-const MC_VERSION_NAME = '1.17.1';
+/** Supported target Minecraft Java Edition versions. */
+export type McTargetVersion = '1.16.5' | '1.17.1' | '1.18.2' | '1.19.4' | '1.20.4';
+
+interface McVersionSpec {
+  dataVersion: number;
+  versionName: string;
+  minY: number;
+  maxY: number;
+  sectionsPerChunk: number;
+  minSectionY: number;
+  newChunkFormat: boolean; // 1.18+ uses flat root NBT instead of Level compound
+}
+
+const MC_VERSION_SPECS: Record<McTargetVersion, McVersionSpec> = {
+  '1.16.5': { dataVersion: 2586, versionName: '1.16.5', minY: 0,   maxY: 255, sectionsPerChunk: 16, minSectionY: 0,  newChunkFormat: false },
+  '1.17.1': { dataVersion: 2730, versionName: '1.17.1', minY: 0,   maxY: 255, sectionsPerChunk: 16, minSectionY: 0,  newChunkFormat: false },
+  '1.18.2': { dataVersion: 2860, versionName: '1.18.2', minY: -64, maxY: 319, sectionsPerChunk: 24, minSectionY: -4, newChunkFormat: true  },
+  '1.19.4': { dataVersion: 3120, versionName: '1.19.4', minY: -64, maxY: 319, sectionsPerChunk: 24, minSectionY: -4, newChunkFormat: true  },
+  '1.20.4': { dataVersion: 3700, versionName: '1.20.4', minY: -64, maxY: 319, sectionsPerChunk: 24, minSectionY: -4, newChunkFormat: true  },
+};
+
+const DEFAULT_MC_VERSION: McTargetVersion = '1.17.1';
 const SECTION_HEIGHT = 16; // blocks per section
-const SECTIONS_PER_CHUNK = 16; // sections per chunk (Y 0–255)
 const CHUNK_SIZE = 16; // blocks per chunk in X or Z
 const CHUNKS_PER_TILE = TILE_SIZE / CHUNK_SIZE; // 8 (128 / 16)
 const CHUNKS_PER_REGION = 32; // chunks per region in X or Z
@@ -138,6 +157,7 @@ function packBlockStates(blocks: Uint16Array, paletteSize: number): BigInt64Arra
 function generateSection(
   sectionY: number,
   columns: ColumnSample[],
+  spec: McVersionSpec,
 ): { palette: string[]; blockStates: BigInt64Array } | null {
   const minY = sectionY * SECTION_HEIGHT;
   const maxY = minY + SECTION_HEIGHT - 1;
@@ -177,19 +197,19 @@ function generateSection(
     for (let bx = 0; bx < CHUNK_SIZE; bx += 1) {
       const { height, water, terrain } = columns[bx + bz * CHUNK_SIZE];
       // Clamp to 1.17 Y range.
-      const h = Math.max(0, Math.min(255, height));
-      const w = water > height ? Math.max(0, Math.min(255, water)) : 0;
+      const h = Math.max(spec.minY, Math.min(spec.maxY, height));
+      const w = water > height ? Math.max(spec.minY, Math.min(spec.maxY, water)) : 0;
 
       for (let localY = 0; localY < SECTION_HEIGHT; localY += 1) {
         const worldY = minY + localY;
 
-        if (worldY > 255) {
+        if (worldY > spec.maxY || worldY < spec.minY) {
           continue;
         }
 
         let blockName: string;
 
-        if (worldY === 0) {
+        if (worldY === spec.minY) {
           blockName = BEDROCK;
         } else if (worldY > h) {
           // Above terrain surface: water if below water table, else air.
@@ -226,12 +246,13 @@ function generateSection(
 // ---- Chunk generation ----
 
 /**
- * Generate uncompressed NBT bytes for one 16×16×256 chunk.
+ * Generate uncompressed NBT bytes for one 16×16×256 chunk (1.16/1.17 format).
  */
 function generateChunkNbt(
   chunkX: number,
   chunkZ: number,
   tile: TileState,
+  spec: McVersionSpec,
 ): Uint8Array {
   // Build the 16×16 column sample array.
   // chunkX / chunkZ are absolute Minecraft chunk coordinates.
@@ -262,8 +283,9 @@ function generateChunkNbt(
   // Generate non-empty sections.
   const sectionEntries = [];
 
-  for (let sY = 0; sY < SECTIONS_PER_CHUNK; sY += 1) {
-    const sectionData = generateSection(sY, columns);
+  for (let sY = 0; sY < spec.sectionsPerChunk; sY += 1) {
+    const sectionAbsY = spec.minSectionY + sY;
+    const sectionData = generateSection(sectionAbsY, columns, spec);
 
     if (!sectionData) {
       continue;
@@ -271,7 +293,7 @@ function generateChunkNbt(
 
     const paletteEntries = sectionData.palette.map((name) => nbtCompound({ Name: nbtString(name) }));
     sectionEntries.push(nbtCompound({
-      Y: nbtByte(sY),
+      Y: nbtByte(sectionAbsY),
       Palette: nbtList(TAG_COMPOUND, paletteEntries),
       BlockStates: nbtLongArray(sectionData.blockStates),
     }));
@@ -306,8 +328,82 @@ function generateChunkNbt(
   });
 
   return serializeNbtRoot('', {
-    DataVersion: nbtInt(MC_DATA_VERSION),
+    DataVersion: nbtInt(spec.dataVersion),
     Level: level,
+  });
+}
+
+/**
+ * Generate uncompressed NBT bytes for one chunk in Minecraft 1.18+ format.
+ * 1.18+ uses a flat root (no Level compound), different section key names,
+ * per-section biomes, and supports negative Y.
+ */
+function generateChunkNbt18(
+  chunkX: number,
+  chunkZ: number,
+  tile: TileState,
+  spec: McVersionSpec,
+): Uint8Array {
+  const tileOriginBlockX = tile.x * TILE_SIZE;
+  const tileOriginBlockZ = tile.y * TILE_SIZE;
+  const chunkOriginBlockX = chunkX * CHUNK_SIZE;
+  const chunkOriginBlockZ = chunkZ * CHUNK_SIZE;
+
+  const columns: ColumnSample[] = new Array(CHUNK_SIZE * CHUNK_SIZE);
+  for (let bz = 0; bz < CHUNK_SIZE; bz++) {
+    for (let bx = 0; bx < CHUNK_SIZE; bx++) {
+      const blockX = chunkOriginBlockX + bx;
+      const blockZ = chunkOriginBlockZ + bz;
+      const localX = blockX - tileOriginBlockX;
+      const localZ = blockZ - tileOriginBlockZ;
+      const sampleIdx = localX + localZ * TILE_SIZE;
+      columns[bx + bz * CHUNK_SIZE] = {
+        height: tile.heights[sampleIdx] ?? 64,
+        water: tile.waterLevels[sampleIdx] ?? 0,
+        terrain: tile.terrain[sampleIdx] ?? TERRAIN_CODES.grass,
+      };
+    }
+  }
+
+  const sectionEntries = [];
+  for (let sY = 0; sY < spec.sectionsPerChunk; sY++) {
+    const sectionAbsY = spec.minSectionY + sY;
+    const sectionData = generateSection(sectionAbsY, columns, spec);
+
+    // Always include sections in 1.18+ (even empty ones need biome data placeholder)
+    const paletteEntries = (sectionData?.palette ?? [AIR]).map((name) => nbtCompound({ Name: nbtString(name) }));
+    const blockStatesCompound: Record<string, ReturnType<typeof nbtList>> = {
+      palette: nbtList(TAG_COMPOUND, paletteEntries),
+    };
+    if (sectionData) {
+      // data field only when there are non-uniform blocks
+      if (sectionData.palette.length > 1) {
+        (blockStatesCompound as Record<string, unknown>)['data'] = nbtLongArray(sectionData.blockStates);
+      }
+    }
+
+    // Per-section biomes: palette of biome name strings + optional data long array (4×4×4 = 64 entries)
+    const biomePalette = ['minecraft:plains'];
+    const biomesCompound: Record<string, ReturnType<typeof nbtList>> = {
+      palette: nbtList(8 /* TAG_String */, biomePalette.map(nbtString)),
+    };
+
+    sectionEntries.push(nbtCompound({
+      Y: nbtByte(sectionAbsY),
+      block_states: nbtCompound(blockStatesCompound as Parameters<typeof nbtCompound>[0]),
+      biomes: nbtCompound(biomesCompound as Parameters<typeof nbtCompound>[0]),
+    }));
+  }
+
+  return serializeNbtRoot('', {
+    DataVersion: nbtInt(spec.dataVersion),
+    xPos: nbtInt(chunkX),
+    zPos: nbtInt(chunkZ),
+    yPos: nbtInt(spec.minSectionY),
+    Status: nbtString('minecraft:full'),
+    sections: nbtList(TAG_COMPOUND, sectionEntries),
+    block_entities: nbtList(TAG_COMPOUND, []),
+    Heightmaps: nbtCompound({}),
   });
 }
 
@@ -365,20 +461,41 @@ function writeRegionFile(chunks: Array<{ localX: number; localZ: number; nbt: Ui
 
 // ---- level.dat ----
 
-function generateLevelDat(project: ProjectState): Uint8Array {
+const GAME_MODE_INDEX: Record<string, number> = {
+  survival: 0,
+  creative: 1,
+  adventure: 2,
+  spectator: 3,
+};
+
+function generateLevelDat(project: ProjectState, spec: McVersionSpec): Uint8Array {
   const dimension = getActiveDimension(project);
-  // Approximate spawn point: midpoint of loaded tile bounds.
-  const midTileX = Math.round((dimension.minTileX + dimension.maxTileX) / 2);
-  const midTileZ = Math.round((dimension.minTileY + dimension.maxTileY) / 2);
-  const spawnX = midTileX * TILE_SIZE + TILE_SIZE / 2;
-  const spawnZ = midTileZ * TILE_SIZE + TILE_SIZE / 2;
-  const spawnY = 64;
+
+  let spawnX: number;
+  let spawnY: number;
+  let spawnZ: number;
+
+  if (project.spawnPoint) {
+    spawnX = project.spawnPoint.x;
+    spawnY = project.spawnPoint.y;
+    spawnZ = project.spawnPoint.z;
+  } else {
+    // Approximate spawn point: midpoint of loaded tile bounds.
+    const midTileX = Math.round((dimension.minTileX + dimension.maxTileX) / 2);
+    const midTileZ = Math.round((dimension.minTileY + dimension.maxTileY) / 2);
+    spawnX = midTileX * TILE_SIZE + TILE_SIZE / 2;
+    spawnZ = midTileZ * TILE_SIZE + TILE_SIZE / 2;
+    spawnY = 64;
+  }
+
+  const gameModeIndex = GAME_MODE_INDEX[project.gameMode ?? 'creative'] ?? 1;
+  const worldSeed = BigInt(project.worldSeed ?? 0);
 
   const data = nbtCompound({
-    DataVersion: nbtInt(MC_DATA_VERSION),
+    DataVersion: nbtInt(spec.dataVersion),
     LevelName: nbtString(project.name),
-    RandomSeed: nbtLong(0n),
-    GameType: nbtInt(1), // creative
+    RandomSeed: nbtLong(worldSeed),
+    GameType: nbtInt(gameModeIndex),
     SpawnX: nbtInt(spawnX),
     SpawnY: nbtInt(spawnY),
     SpawnZ: nbtInt(spawnZ),
@@ -387,8 +504,8 @@ function generateLevelDat(project: ProjectState): Uint8Array {
     initialized: nbtByte(1),
     allowCommands: nbtByte(1),
     Version: nbtCompound({
-      Id: nbtInt(MC_DATA_VERSION),
-      Name: nbtString(MC_VERSION_NAME),
+      Id: nbtInt(spec.dataVersion),
+      Name: nbtString(spec.versionName),
       Snapshot: nbtByte(0),
     }),
   });
@@ -412,13 +529,17 @@ export function canExportMinecraftWorld(project: ProjectState): boolean {
 }
 
 /**
- * Export the active dimension of a project as a Minecraft Java Edition 1.17.1 world.
+ * Export the active dimension of a project as a Minecraft Java Edition world.
  * Returns a zip archive containing level.dat and all region files.
  *
  * Each WorldPainter tile (128×128 blocks) maps to an 8×8 chunk grid;
  * one Minecraft region (32×32 chunks = 512×512 blocks) accommodates 4×4 WP tiles.
  */
-export function exportMinecraftWorld(project: ProjectState): ExportedMinecraftWorld {
+export function exportMinecraftWorld(
+  project: ProjectState,
+  targetVersion: McTargetVersion = DEFAULT_MC_VERSION,
+): ExportedMinecraftWorld {
+  const spec = MC_VERSION_SPECS[targetVersion];
   const dimension = getActiveDimension(project);
   const tiles = Object.values(dimension.tiles);
 
@@ -452,15 +573,16 @@ export function exportMinecraftWorld(project: ProjectState): ExportedMinecraftWo
         const chunkZ = startChunkZ + lcz;
         const localX = chunkX - regionX * CHUNKS_PER_REGION;
         const localZ = chunkZ - regionZ * CHUNKS_PER_REGION;
-        regionChunks.push({ localX, localZ, nbt: generateChunkNbt(chunkX, chunkZ, tile) });
+        const nbt = spec.newChunkFormat
+          ? generateChunkNbt18(chunkX, chunkZ, tile, spec)
+          : generateChunkNbt(chunkX, chunkZ, tile, spec);
+        regionChunks.push({ localX, localZ, nbt });
         chunkCount += 1;
       }
     }
   }
 
   // Build the zip contents.
-  // Region files are stored without additional zip compression (chunks are already zlib-compressed).
-  // level.dat is already gzip-compressed, so also store it uncompressed in zip.
   const noCompress: ZipOptions = { level: 0 };
   const zipFiles: Record<string, [Uint8Array, ZipOptions]> = {};
 
@@ -469,12 +591,13 @@ export function exportMinecraftWorld(project: ProjectState): ExportedMinecraftWo
     zipFiles[`region/r.${regionX}.${regionZ}.mca`] = [writeRegionFile(chunks), noCompress];
   }
 
-  zipFiles['level.dat'] = [generateLevelDat(project), noCompress];
+  zipFiles['level.dat'] = [generateLevelDat(project, spec), noCompress];
 
   const safeName = project.name.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  const versionSuffix = targetVersion.replace(/\./g, '');
 
   return {
-    fileName: `${safeName}-mc1171.zip`,
+    fileName: `${safeName}-mc${versionSuffix}.zip`,
     bytes: zipSync(zipFiles),
     regionCount: regionMap.size,
     chunkCount,

@@ -92,6 +92,9 @@ export function createDemoProject(name = 'Compatibility Draft'): ProjectState {
     dimensions: {
       [surfaceId]: surface,
     },
+    spawnPoint: { x: 0, y: 65, z: 0 },
+    gameMode: 'survival',
+    worldSeed: 0,
     compatibility: {
       readSupport: 'planned',
       writeSupport: 'planned',

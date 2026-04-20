@@ -225,6 +225,14 @@ export interface DimensionState {
   importMetadata?: ImportedDimensionMetadata;
 }
 
+export type GameMode = 'survival' | 'creative' | 'adventure' | 'spectator';
+
+export interface SpawnPoint {
+  x: number;
+  z: number;
+  y: number;
+}
+
 export interface ProjectState {
   id: string;
   schemaVersion: number;
@@ -236,6 +244,12 @@ export interface ProjectState {
   dimensions: Record<string, DimensionState>;
   importSource?: ImportedWorldFileSource;
   compatibility: CompatibilityStatus;
+  /** Minecraft spawn point (world coordinates). */
+  spawnPoint?: SpawnPoint;
+  /** Default game mode for the exported world. */
+  gameMode?: GameMode;
+  /** World seed shown in world properties. */
+  worldSeed?: number;
 }
 
 export function tileKey(x: number, y: number): string {

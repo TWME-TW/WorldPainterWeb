@@ -22,6 +22,12 @@ const TOOL_LABELS: Record<BrushTool, string> = {
   'raise-water': 'Raise Water',
   'lower-water': 'Lower Water',
   'paint-terrain': 'Paint Terrain',
+  spray:         'Spray Paint',
+  'flood-water': 'Flood Water',
+  'flood-lava':  'Flood Lava',
+  mountain:      'Mountain',
+  sponge:        'Sponge',
+  'set-spawn':   'Set Spawn Point',
 };
 
 export function BrushOptionsPanel({
@@ -34,8 +40,9 @@ export function BrushOptionsPanel({
   onUndo,
   onRedo,
 }: BrushOptionsPanelProps) {
-  const showTerrainPalette = brushSettings.tool === 'paint-terrain';
+  const showTerrainPalette = brushSettings.tool === 'paint-terrain' || brushSettings.tool === 'spray';
   const showFlattenLevel = brushSettings.tool === 'flatten';
+  const isClickTool = brushSettings.tool === 'flood-water' || brushSettings.tool === 'flood-lava' || brushSettings.tool === 'set-spawn';
 
   return (
     <div className="wp-brushpanel">
@@ -46,8 +53,15 @@ export function BrushOptionsPanel({
         </span>
       </div>
 
-      {/* Radius */}
-      <div className="wp-brushpanel-section">
+      {/* Click-tool hint: flood + set-spawn don't use radius/strength sliders */}
+      {isClickTool && (
+        <div className="wp-brushpanel-section" style={{ color: 'var(--wp-text-dim)', fontSize: 10 }}>
+          {brushSettings.tool === 'set-spawn' ? 'Click to set spawn point' : 'Click to flood-fill from cursor'}
+        </div>
+      )}
+
+      {/* Radius — hidden for click-only tools */}
+      {!isClickTool && <div className="wp-brushpanel-section">
         <span className="wp-brush-label">Radius</span>
         <input
           type="range"
@@ -59,10 +73,10 @@ export function BrushOptionsPanel({
           onChange={(e) => onChangeBrush({ ...brushSettings, radius: Number(e.target.value) })}
         />
         <span className="wp-value-display">{brushSettings.radius}</span>
-      </div>
+      </div>}
 
-      {/* Strength */}
-      <div className="wp-brushpanel-section">
+      {/* Strength — hidden for click-only tools */}
+      {!isClickTool && <div className="wp-brushpanel-section">
         <span className="wp-brush-label">Strength</span>
         <input
           type="range"
@@ -74,7 +88,7 @@ export function BrushOptionsPanel({
           onChange={(e) => onChangeBrush({ ...brushSettings, strength: Number(e.target.value) })}
         />
         <span className="wp-value-display">{brushSettings.strength}</span>
-      </div>
+      </div>}
 
       {/* Flatten level (only when flatten tool is active) */}
       {showFlattenLevel && (

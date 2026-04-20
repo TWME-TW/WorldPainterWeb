@@ -15,6 +15,7 @@ const TOOL_GROUPS: ToolGroup[] = [
     tools: [
       { tool: 'raise', icon: '▲', label: 'Raise' },
       { tool: 'lower', icon: '▼', label: 'Lower' },
+      { tool: 'mountain', icon: '⛰', label: 'Mountain' },
       { tool: 'flatten', icon: '▬', label: 'Flatten' },
       { tool: 'smooth', icon: '〰', label: 'Smooth' },
       { tool: 'erode', icon: '≈', label: 'Erode' },
@@ -24,11 +25,20 @@ const TOOL_GROUPS: ToolGroup[] = [
     tools: [
       { tool: 'raise-water', icon: '💧', label: 'Raise Wtr' },
       { tool: 'lower-water', icon: '🔽', label: 'Lower Wtr' },
+      { tool: 'flood-water', icon: '🌊', label: 'Flood' },
+      { tool: 'flood-lava', icon: '🌋', label: 'Flood Lava' },
+      { tool: 'sponge', icon: '🧽', label: 'Sponge' },
     ],
   },
   {
     tools: [
-      { tool: 'paint-terrain', icon: '🖌', label: 'Terrain' },
+      { tool: 'paint-terrain', icon: '🖌', label: 'Paint' },
+      { tool: 'spray', icon: '💨', label: 'Spray' },
+    ],
+  },
+  {
+    tools: [
+      { tool: 'set-spawn', icon: '🏠', label: 'Spawn Pt' },
     ],
   },
 ];

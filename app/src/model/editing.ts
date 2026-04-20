@@ -7,7 +7,13 @@ import {
   type TileState,
 } from './types.ts';
 
-export type BrushTool = 'raise' | 'lower' | 'flatten' | 'smooth' | 'erode' | 'raise-water' | 'lower-water' | 'paint-terrain';
+export type BrushTool =
+  | 'raise' | 'lower' | 'flatten' | 'smooth' | 'erode'
+  | 'raise-water' | 'lower-water'
+  | 'paint-terrain' | 'spray'
+  | 'flood-water' | 'flood-lava'
+  | 'mountain' | 'sponge'
+  | 'set-spawn';
 
 export interface BrushSettings {
   tool: BrushTool;
@@ -317,7 +323,7 @@ export function applyBrushToProject(
     return applyWaterBrushToProject(project, dimensionId, stamp, settings);
   }
 
-  if (settings.tool === 'paint-terrain') {
+  if (settings.tool === 'paint-terrain' || settings.tool === 'spray') {
     return applyTerrainBrushToProject(project, dimensionId, stamp, settings);
   }
 
@@ -333,11 +339,25 @@ export function applyBrushToProject(
     return applyErodeBrushToProject(project, dimensionId, stamp, settings);
   }
 
+  if (settings.tool === 'flood-water' || settings.tool === 'flood-lava') {
+    return applyFloodToProject(project, dimensionId, stamp, settings);
+  }
+
+  if (settings.tool === 'mountain') {
+    return applyMountainToProject(project, dimensionId, stamp, settings);
+  }
+
+  if (settings.tool === 'sponge') {
+    return applySpongeToProject(project, dimensionId, stamp, settings);
+  }
+
+  // raise / lower (default)
   return applyHeightBrushToProject(project, dimensionId, stamp, settings);
 }
 
 /**
  * Explicitly paint a terrain code onto all cells within the brush radius.
+ * For the `spray` tool, uses probabilistic painting (denser at centre).
  * Does not modify heights or water levels.
  */
 export function applyTerrainBrushToProject(
@@ -398,6 +418,13 @@ export function applyTerrainBrushToProject(
 
           if (sourceTile.terrain[index] === targetTerrain) {
             continue;
+          }
+
+          // Spray tool: probabilistic — probability decreases toward edge
+          if (settings.tool === 'spray') {
+            const falloff = radius === 0 ? 1 : 1 - distance / (radius + 1);
+            const probability = falloff * (settings.strength / 20);
+            if (Math.random() > probability) continue;
           }
 
           if (!nextTile) {
@@ -690,3 +717,197 @@ export function applyErodeBrushToProject(
     changedTileCount, changedSampleCount, changedTileKeys: Object.keys(nextTiles),
   };
 }
+
+// ─── Flood tool ───────────────────────────────────────────────────────────────
+// BFS from click point: fills all contiguous terrain at/below flood level with water or lava.
+const MAX_FLOOD_CELLS = 100_000;
+
+export function applyFloodToProject(
+  project: ProjectState,
+  dimensionId: string,
+  stamp: BrushStamp,
+  settings: BrushSettings,
+): BrushMutationResult {
+  const dimension = project.dimensions[dimensionId];
+  if (!dimension) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+
+  const isLava = settings.tool === 'flood-lava';
+  const tileSize = dimension.tileSize;
+  const startTX = Math.floor(stamp.worldX / tileSize);
+  const startTY = Math.floor(stamp.worldY / tileSize);
+  const startTile = dimension.tiles[tileKey(startTX, startTY)];
+  if (!startTile) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+
+  const startLX = ((stamp.worldX % tileSize) + tileSize) % tileSize;
+  const startLY = ((stamp.worldY % tileSize) + tileSize) % tileSize;
+  const floodLevel = startTile.heights[startLX + startLY * tileSize];
+
+  const nextTiles: Record<string, TileState> = {};
+  const getOrCloneTile = (tx: number, ty: number): TileState | null => {
+    const k = tileKey(tx, ty);
+    if (nextTiles[k]) return nextTiles[k];
+    const orig = dimension.tiles[k];
+    if (!orig) return null;
+    nextTiles[k] = cloneTile(orig);
+    return nextTiles[k];
+  };
+
+  const visited = new Set<string>();
+  const queue: [number, number][] = [[stamp.worldX, stamp.worldY]];
+  let changedSampleCount = 0;
+
+  while (queue.length > 0 && changedSampleCount < MAX_FLOOD_CELLS) {
+    const item = queue.shift()!;
+    const wx = item[0]; const wy = item[1];
+    const cellKey = `${wx},${wy}`;
+    if (visited.has(cellKey)) continue;
+    visited.add(cellKey);
+
+    const tx = Math.floor(wx / tileSize);
+    const ty = Math.floor(wy / tileSize);
+    const lx = ((wx % tileSize) + tileSize) % tileSize;
+    const ly = ((wy % tileSize) + tileSize) % tileSize;
+    const tile = getOrCloneTile(tx, ty);
+    if (!tile) continue;
+
+    const idx = lx + ly * tileSize;
+    const height = tile.heights[idx];
+    if (height > floodLevel) continue;
+
+    const newTerrain = isLava ? TERRAIN_CODES.lava : TERRAIN_CODES.water;
+    if (tile.waterLevels[idx] === floodLevel && tile.terrain[idx] === newTerrain) continue;
+
+    tile.waterLevels[idx] = floodLevel;
+    tile.terrain[idx] = newTerrain;
+    changedSampleCount += 1;
+
+    for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as [number, number][]) {
+      const nKey = `${wx + dx},${wy + dy}`;
+      if (!visited.has(nKey)) queue.push([wx + dx, wy + dy]);
+    }
+  }
+
+  const changedTileKeys = Object.keys(nextTiles);
+  if (changedTileKeys.length === 0) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+  return {
+    project: { ...project, updatedAt: new Date().toISOString(), dimensions: { ...project.dimensions, [dimensionId]: { ...dimension, tiles: { ...dimension.tiles, ...nextTiles } } } },
+    changedTileCount: changedTileKeys.length, changedSampleCount, changedTileKeys,
+  };
+}
+
+// ─── Mountain tool ─────────────────────────────────────────────────────────────
+// Creates a conical mountain at the click point; peak gain = strength * 8.
+
+export function applyMountainToProject(
+  project: ProjectState,
+  dimensionId: string,
+  stamp: BrushStamp,
+  settings: BrushSettings,
+): BrushMutationResult {
+  const dimension = project.dimensions[dimensionId];
+  if (!dimension) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+
+  const radius = Math.max(1, Math.floor(settings.radius));
+  const peakGain = settings.strength * 8;
+  const tileSize = dimension.tileSize;
+  const minTileX = Math.floor((stamp.worldX - radius) / tileSize);
+  const maxTileX = Math.floor((stamp.worldX + radius) / tileSize);
+  const minTileY = Math.floor((stamp.worldY - radius) / tileSize);
+  const maxTileY = Math.floor((stamp.worldY + radius) / tileSize);
+  const nextTiles: Record<string, TileState> = {};
+  let changedTileCount2 = 0; let changedSampleCount2 = 0;
+
+  for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+    for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+      const currentTile = dimension.tiles[tileKey(tileX, tileY)];
+      if (!currentTile) continue;
+      const toX = tileX * tileSize; const toY = tileY * tileSize;
+      const lMinX = Math.max(0, stamp.worldX - radius - toX);
+      const lMaxX = Math.min(tileSize - 1, stamp.worldX + radius - toX);
+      const lMinY = Math.max(0, stamp.worldY - radius - toY);
+      const lMaxY = Math.min(tileSize - 1, stamp.worldY + radius - toY);
+      let nextTile: TileState | null = null;
+      for (let ly = lMinY; ly <= lMaxY; ly++) {
+        for (let lx = lMinX; lx <= lMaxX; lx++) {
+          const swX = toX + lx; const swY = toY + ly;
+          const dist = Math.hypot(swX - stamp.worldX, swY - stamp.worldY);
+          if (dist > radius) continue;
+          const cone = Math.round(peakGain * (1 - dist / radius));
+          if (cone <= 0) continue;
+          const index = lx + ly * tileSize;
+          const src = nextTile ?? currentTile;
+          const nh = clamp(src.heights[index] + cone, dimension.minHeight, dimension.maxHeight);
+          const nt = classifyTerrain(nh, src.waterLevels[index]);
+          if (nh === src.heights[index] && nt === src.terrain[index]) continue;
+          if (!nextTile) nextTile = cloneTile(currentTile);
+          nextTile.heights[index] = nh; nextTile.terrain[index] = nt;
+          changedSampleCount2 += 1;
+        }
+      }
+      if (nextTile) { nextTiles[tileKey(tileX, tileY)] = nextTile; changedTileCount2 += 1; }
+    }
+  }
+
+  if (changedTileCount2 === 0) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+  return {
+    project: { ...project, updatedAt: new Date().toISOString(), dimensions: { ...project.dimensions, [dimensionId]: { ...dimension, tiles: { ...dimension.tiles, ...nextTiles } } } },
+    changedTileCount: changedTileCount2, changedSampleCount: changedSampleCount2, changedTileKeys: Object.keys(nextTiles),
+  };
+}
+
+// ─── Sponge tool ──────────────────────────────────────────────────────────────
+// Removes water within the brush radius (sets waterLevel → minHeight).
+
+export function applySpongeToProject(
+  project: ProjectState,
+  dimensionId: string,
+  stamp: BrushStamp,
+  settings: BrushSettings,
+): BrushMutationResult {
+  const dimension = project.dimensions[dimensionId];
+  if (!dimension) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+
+  const radius = Math.max(0, Math.floor(settings.radius));
+  const tileSize = dimension.tileSize;
+  const minTileX = Math.floor((stamp.worldX - radius) / tileSize);
+  const maxTileX = Math.floor((stamp.worldX + radius) / tileSize);
+  const minTileY = Math.floor((stamp.worldY - radius) / tileSize);
+  const maxTileY = Math.floor((stamp.worldY + radius) / tileSize);
+  const nextTiles: Record<string, TileState> = {};
+  let changedTileCount3 = 0; let changedSampleCount3 = 0;
+  const dryLevel = dimension.minHeight ?? 0;
+
+  for (let tileY = minTileY; tileY <= maxTileY; tileY += 1) {
+    for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
+      const currentTile = dimension.tiles[tileKey(tileX, tileY)];
+      if (!currentTile) continue;
+      const toX = tileX * tileSize; const toY = tileY * tileSize;
+      const lMinX = Math.max(0, stamp.worldX - radius - toX);
+      const lMaxX = Math.min(tileSize - 1, stamp.worldX + radius - toX);
+      const lMinY = Math.max(0, stamp.worldY - radius - toY);
+      const lMaxY = Math.min(tileSize - 1, stamp.worldY + radius - toY);
+      let nextTile: TileState | null = null;
+      for (let ly = lMinY; ly <= lMaxY; ly++) {
+        for (let lx = lMinX; lx <= lMaxX; lx++) {
+          const swX = toX + lx; const swY = toY + ly;
+          if (Math.hypot(swX - stamp.worldX, swY - stamp.worldY) > radius) continue;
+          const index = lx + ly * tileSize;
+          const src = nextTile ?? currentTile;
+          if (src.waterLevels[index] <= dryLevel) continue;
+          if (!nextTile) nextTile = cloneTile(currentTile);
+          nextTile.waterLevels[index] = dryLevel;
+          nextTile.terrain[index] = classifyTerrain(nextTile.heights[index], dryLevel);
+          changedSampleCount3 += 1;
+        }
+      }
+      if (nextTile) { nextTiles[tileKey(tileX, tileY)] = nextTile; changedTileCount3 += 1; }
+    }
+  }
+
+  if (changedTileCount3 === 0) return { project, changedTileCount: 0, changedSampleCount: 0, changedTileKeys: [] };
+  return {
+    project: { ...project, updatedAt: new Date().toISOString(), dimensions: { ...project.dimensions, [dimensionId]: { ...dimension, tiles: { ...dimension.tiles, ...nextTiles } } } },
+    changedTileCount: changedTileCount3, changedSampleCount: changedSampleCount3, changedTileKeys: Object.keys(nextTiles),
+  };
+}
+

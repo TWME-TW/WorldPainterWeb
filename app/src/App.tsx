@@ -5,8 +5,9 @@ import { MenuBar } from './components/MenuBar';
 import { StatusBar } from './components/StatusBar';
 import { ToolPanel } from './components/ToolPanel';
 import { Viewport } from './components/Viewport';
+import { WorldPropertiesDialog } from './components/WorldPropertiesDialog';
 import { canExportPatchedWorldFile, exportPatchedWorldFile } from './export/worldFileExport';
-import { canExportMinecraftWorld, exportMinecraftWorld } from './export/minecraftExport';
+import { canExportMinecraftWorld, exportMinecraftWorld, type McTargetVersion } from './export/minecraftExport';
 import { createImportedProject } from './import/createImportedProject';
 import { probeWorldFile } from './import/worldFileProbe';
 import { createDemoProject } from './model/createDemoProject';
@@ -20,7 +21,6 @@ import {
 import {
   TERRAIN_CODES,
   getActiveDimension,
-  type DimensionState,
   type DimensionState,
   type ProjectState,
 } from './model/types';
@@ -78,6 +78,8 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [newWorldDialog, setNewWorldDialog] = useState<NewWorldDialogState>({ open: false, name: '' });
   const [aboutDialog, setAboutDialog] = useState<AboutDialogState>({ open: false });
+  const [worldPropertiesOpen, setWorldPropertiesOpen] = useState(false);
+  const [mcExportVersion, setMcExportVersion] = useState<McTargetVersion>('1.17.1');
 
   useEffect(() => { projectRef.current = project; }, [project]);
 
@@ -185,6 +187,21 @@ export default function App() {
   function handleApplyBrush(worldX: number, worldY: number) {
     const cur = projectRef.current;
     if (!cur) return;
+
+    // set-spawn is a click tool — directly update spawn point
+    if (brushSettings.tool === 'set-spawn') {
+      const h = getActiveDimension(cur).tiles[`${Math.floor(worldX / 128)},${Math.floor(worldY / 128)}`];
+      const spawnY = h ? (h.heights[
+        (worldX - Math.floor(worldX / 128) * 128) +
+        (worldY - Math.floor(worldY / 128) * 128) * 128
+      ] ?? 64) + 1 : 64;
+      const next: ProjectState = { ...cur, spawnPoint: { x: worldX, y: spawnY, z: worldY }, updatedAt: new Date().toISOString() };
+      projectRef.current = next;
+      setProject(next);
+      setStatusMessage(`Spawn point set to (${worldX}, ${spawnY}, ${worldY}).`);
+      return;
+    }
+
     const result = applyBrushToProject(cur, cur.activeDimensionId, { worldX, worldY }, brushSettings);
     if (result.project === cur) return;
 
@@ -246,7 +263,8 @@ export default function App() {
   function handleDownloadWorldFile() {
     if (!project) return;
     try {
-      const exported = exportPatchedWorldFile(project);.buffer as ArrayBuffer], { type: 'application/gzip' }));
+      const exported = exportPatchedWorldFile(project);
+      const url = URL.createObjectURL(new Blob([exported.bytes.buffer as ArrayBuffer], { type: 'application/gzip' }));
       const a = document.createElement('a');
       a.href = url; a.download = exported.fileName; a.click();
       URL.revokeObjectURL(url);
@@ -259,8 +277,7 @@ export default function App() {
   function handleExportMinecraft() {
     if (!project) return;
     try {
-      const exported = exportMinecraftWorld(project);
-      const url = URL.createObjectURL(new Blob([exported.bytes.buffer as ArrayBuffer
+      const exported = exportMinecraftWorld(project, mcExportVersion);
       const url = URL.createObjectURL(new Blob([exported.bytes.buffer as ArrayBuffer], { type: 'application/zip' }));
       const a = document.createElement('a');
       a.href = url; a.download = exported.fileName; a.click();
@@ -311,6 +328,18 @@ export default function App() {
     setStatusMessage(`Switched to ${dim.name}.`);
   }
 
+  function handleWorldProperties() { setWorldPropertiesOpen(true); }
+
+  function handleApplyWorldProperties(patch: Partial<ProjectState>) {
+    const cur = projectRef.current;
+    if (!cur) return;
+    const next: ProjectState = { ...cur, ...patch, updatedAt: new Date().toISOString() };
+    projectRef.current = next;
+    setProject(next);
+    setWorldPropertiesOpen(false);
+    setStatusMessage('World properties updated.');
+  }
+
   // ── Cursor tracking from Viewport ─────────────────────────────────────────
   function handleViewportCursorMove(worldX: number, worldY: number) {
     setCursorWorldX(worldX);
@@ -339,15 +368,16 @@ export default function App() {
         onOpenWorld={handleOpenWorld}
         onSaveWorld={handleSaveWorld}
         onDownloadWorldFile={handleDownloadWorldFile}
-        onExporWorld={canSave}
+        onExportMinecraft={handleExportMinecraft}
+        canSaveWorld={canSave}
         canDownloadWorldFile={canDownload}
-        canExportMinecrafoadWorldFile={canDownload}
         canExportMinecraft={canExport}
         canUndo={historyPast.length > 0}
         canRedo={historyFuture.length > 0}
         onUndo={handleUndo}
         onRedo={handleRedo}
         onAbout={() => setAboutDialog({ open: true })}
+        onWorldProperties={handleWorldProperties}
       />
 
       {/* Hidden file input */}
@@ -477,7 +507,7 @@ export default function App() {
             </div>
             <div className="wp-dialog-body" style={{ fontSize: 12, lineHeight: 1.6 }}>
               <p><strong>WorldPainterWeb</strong> — a browser-native re-implementation of WorldPainter's terrain sculpting.</p>
-              <p>Features: Raise/Lower/Flatten/Smooth/Erode brushes, Paint Terrain, Undo/Redo (50 steps), .world import, patched .world export, Minecraft 1.17.1 export, IndexedDB autosave.</p>
+              <p>Features: Raise/Lower/Flatten/Smooth/Erode/Mountain/Flood brushes, Spray Paint, Sponge, Set Spawn, World Properties, Undo/Redo (50 steps), .world import, patched .world export, Minecraft 1.16.5–1.20.4 export, IndexedDB autosave.</p>
               <p style={{ color: 'var(--wp-text-dim)' }}>This is an independent open-source project and is not affiliated with the original WorldPainter desktop application.</p>
             </div>
             <div className="wp-dialog-footer">
@@ -485,6 +515,17 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── World Properties dialog ── */}
+      {worldPropertiesOpen && project && (
+        <WorldPropertiesDialog
+          project={project}
+          mcExportVersion={mcExportVersion}
+          onMcExportVersionChange={setMcExportVersion}
+          onClose={() => setWorldPropertiesOpen(false)}
+          onApply={handleApplyWorldProperties}
+        />
       )}
     </div>
   );

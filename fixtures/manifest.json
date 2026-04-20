@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "id": "test-world-root-sample",
+      "path": "../test.world",
+      "sourceFormat": "worldpainter-world",
+      "probeExpectation": {
+        "status": "recognized",
+        "worldRootClass": "org.pepsoft.worldpainter.World2",
+        "metadata": {
+          "name": "test",
+          "wpVersion": "2.26.1",
+          "wpBuild": "20250928124159",
+          "pluginCount": 0
+        },
+        "worldSummary": {
+          "name": "test",
+          "minHeight": -64,
+          "maxHeight": 320,
+          "platformId": "org.pepsoft.anvil.1.20.5",
+          "platformName": "Minecraft 1.20.5 or later",
+          "spawnPoint": {
+            "x": 0,
+            "y": 0
+          },
+          "dimensionCount": 1,
+          "dimensions": [
+            {
+              "name": "Surface",
+              "dimensionSeed": -7585455804957041000,
+              "minecraftSeed": 27594263,
+              "minHeight": -64,
+              "maxHeight": 320,
+              "minTileX": -2,
+              "maxTileX": 2,
+              "minTileY": -2,
+              "maxTileY": 2,
+              "tileCount": 25,
+              "decodedTileCount": 25,
+              "layerSettingCount": 1,
+              "availableLayerCount": 2,
+              "availableLayers": [
+                {
+                  "name": "Lava",
+                  "id": "Lava",
+                  "dataSize": "unknown"
+                },
+                {
+                  "name": "Resources",
+                  "id": "Resources",
+                  "dataSize": "NIBBLE"
+                }
+              ],
+              "tileLayerBufferCount": 0,
+              "tileBitLayerBufferCount": 4,
+              "seedCount": 0,
+              "anchor": {
+                "dim": 0,
+                "role": "DETAIL",
+                "invert": false,
+                "id": 0,
+                "defaultName": "Surface"
+              }
+            }
+          ]
+        }
+      },
+      "importExpectation": {
+        "source": "worldpainter-world",
+        "readSupport": "partial",
+        "writeSupport": "partial",
+        "exportSupport": "partial",
+        "dimensionCount": 1,
+        "activeDimension": {
+          "name": "Surface",
+          "tileSize": 128,
+          "minTileX": -2,
+          "maxTileX": 2,
+          "minTileY": -2,
+          "maxTileY": 2,
+          "loadedTileCount": 25,
+          "importMetadata": {
+            "dimensionSeed": -7585455804957041000,
+            "minecraftSeed": 27594263,
+            "layerSettingCount": 1,
+            "availableLayerCount": 2,
+            "tileLayerBufferCount": 0,
+            "tileBitLayerBufferCount": 4,
+            "seedCount": 0
+          }
+        }
+      },
+      "saveExpectation": {
+        "kind": "height-patch-roundtrip",
+        "worldX": 0,
+        "worldY": 0,
+        "brush": {
+          "tool": "raise",
+          "radius": 10,
+          "strength": 4
+        }
+      },
+      "compatibilityExpectation": {
+        "browserLoad": "core-tile-semantic-import-partial",
+        "browserSave": "height-patch-partial",
+        "desktopReopen": "not-validated",
+        "minecraftExport": "mc-1171-partial"
+      },
+      "mcExportExpectation": {
+        "regionCount": 4,
+        "chunkCount": 1600
+      }
+    }
+  ],
+  "notes": [
+    "Add small original .world samples here together with expected compatibility outcomes.",
+    "Prefer one fixture per focused feature slice so browser import, save, and export parity can be validated incrementally."
+  ]
+}

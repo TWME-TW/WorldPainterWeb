@@ -8,6 +8,9 @@ interface ViewportProps {
   brushSettings: BrushSettings;
   editable: boolean;
   onApplyBrush: (worldX: number, worldY: number) => void;
+  onZoomChange?: (zoom: number) => void;
+  onCursorMove?: (worldX: number, worldY: number) => void;
+  onCursorLeave?: () => void;
 }
 
 interface RenderedTile {
@@ -46,7 +49,7 @@ function getWorldCell(clientX: number, clientY: number, rect: DOMRect, pan: { x:
   };
 }
 
-export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: ViewportProps) {
+export function Viewport({ dimension, brushSettings, editable, onApplyBrush, onZoomChange, onCursorMove, onCursorLeave }: ViewportProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -287,6 +290,7 @@ export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: V
     const rect = event.currentTarget.getBoundingClientRect();
     const worldCell = getWorldCell(event.clientX, event.clientY, rect, pan, zoom);
     setHoveredWorldCell(worldCell);
+    onCursorMove?.(worldCell.x, worldCell.y);
 
     if (editable && event.button === 0 && sortedTiles.length > 0) {
       dragState.current = {
@@ -312,6 +316,7 @@ export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: V
     const rect = event.currentTarget.getBoundingClientRect();
     const worldCell = getWorldCell(event.clientX, event.clientY, rect, pan, zoom);
     setHoveredWorldCell(worldCell);
+    onCursorMove?.(worldCell.x, worldCell.y);
 
     if (!dragState.current || dragState.current.pointerId !== event.pointerId) {
       return;
@@ -355,6 +360,7 @@ export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: V
 
   function handlePointerLeave(event: React.PointerEvent<HTMLCanvasElement>) {
     setHoveredWorldCell(null);
+    onCursorLeave?.();
     handlePointerUp(event);
   }
 
@@ -369,6 +375,7 @@ export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: V
     const nextZoom = clamp(zoom * (event.deltaY > 0 ? 0.9 : 1.1), 0.3, 4);
 
     setZoom(nextZoom);
+    onZoomChange?.(nextZoom);
     setPan({
       x: cursorX - worldX * nextZoom,
       y: cursorY - worldY * nextZoom,
@@ -376,27 +383,18 @@ export function Viewport({ dimension, brushSettings, editable, onApplyBrush }: V
   }
 
   return (
-    <div className="viewport-shell">
-      <div className="viewport-toolbar">
-        <span>{dimension.name}</span>
-        <span>{sortedTiles.length > 0 ? `${renderedTiles.length} rendered tiles` : `${boundedTileCount} bounded tiles`}</span>
-        <span>{editable ? `${brushSettings.tool} brush` : 'inspect only'}</span>
-        <span>{hoveredWorldCell ? `${hoveredWorldCell.x}, ${hoveredWorldCell.y}` : 'cursor off canvas'}</span>
-        <span>{zoom.toFixed(2)}x zoom</span>
-      </div>
-      <div className="viewport-stage" ref={containerRef}>
-        <canvas
-          className="viewport-canvas"
-          ref={canvasRef}
-          onContextMenu={(event) => event.preventDefault()}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerLeave={handlePointerLeave}
-          onWheel={handleWheel}
-        />
-        <canvas className="viewport-overlay" ref={overlayCanvasRef} />
-      </div>
+    <div className="wp-viewport-stage" ref={containerRef}>
+      <canvas
+        className={`viewport-canvas${dragState.current?.kind === 'pan' ? ' panning' : ''}`}
+        ref={canvasRef}
+        onContextMenu={(event) => event.preventDefault()}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
+        onWheel={handleWheel}
+      />
+      <canvas className="viewport-overlay" ref={overlayCanvasRef} />
     </div>
   );
 }

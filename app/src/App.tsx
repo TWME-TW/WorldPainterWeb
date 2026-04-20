@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { BrushOptionsPanel } from './components/BrushOptionsPanel';
+import { LayersPanel } from './components/LayersPanel';
+import { MenuBar } from './components/MenuBar';
+import { StatusBar } from './components/StatusBar';
+import { ToolPanel } from './components/ToolPanel';
 import { Viewport } from './components/Viewport';
 import { canExportPatchedWorldFile, exportPatchedWorldFile } from './export/worldFileExport';
 import { canExportMinecraftWorld, exportMinecraftWorld } from './export/minecraftExport';
 import { createImportedProject } from './import/createImportedProject';
 import { probeWorldFile } from './import/worldFileProbe';
 import { createDemoProject } from './model/createDemoProject';
-import { applyBrushToProject, applyHeightBrushToProject, type BrushSettings } from './model/editing';
+import { applyBrushToProject, type BrushSettings } from './model/editing';
 import {
   applyRedoEntry,
   applyUndoEntry,
@@ -16,844 +21,471 @@ import {
   TERRAIN_CODES,
   getActiveDimension,
   type DimensionState,
+  type DimensionState,
   type ProjectState,
-  type TerrainCode,
-  type WorldFileDimensionSummary,
-  type WorldFileLayerSummary,
-  type WorldFilePointSummary,
-  type WorldFileProbeResult,
 } from './model/types';
 import { loadLastProject, saveProjectSnapshot } from './storage/projectStore';
 
 type SaveStatus = 'idle' | 'loading' | 'saving' | 'saved' | 'error';
 
 function formatTimestamp(value: string | null): string {
-  if (!value) {
-    return 'Not saved yet';
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
-}
-
-function formatPointSummary(point: WorldFilePointSummary | null): string {
-  if (!point) {
-    return 'unknown';
-  }
-
-  return `${point.x}, ${point.y}`;
-}
-
-function formatHeightRange(minHeight: number | null, maxHeight: number | null): string {
-  if (minHeight === null || maxHeight === null) {
-    return 'unknown';
-  }
-
-  return `${minHeight}..${maxHeight}`;
-}
-
-function formatNullableNumber(value: number | null): string {
-  return value === null ? 'unknown' : String(value);
-}
-
-function formatTileBounds(dimension: WorldFileDimensionSummary): string {
-  if (
-    dimension.minTileX === null
-    || dimension.maxTileX === null
-    || dimension.minTileY === null
-    || dimension.maxTileY === null
-  ) {
-    return 'unknown';
-  }
-
-  return `${dimension.minTileX}..${dimension.maxTileX}, ${dimension.minTileY}..${dimension.maxTileY}`;
-}
-
-function formatDimensionLabel(dimension: WorldFileDimensionSummary): string {
-  return dimension.name ?? dimension.anchor?.defaultName ?? 'Unnamed dimension';
-}
-
-function formatLayerLabel(layer: WorldFileLayerSummary): string {
-  return layer.name ?? layer.id ?? layer.className.split('.').at(-1) ?? layer.className;
-}
-
-function formatBrushToolLabel(tool: BrushSettings['tool']): string {
-  switch (tool) {
-    case 'raise': return 'Raise terrain';
-    case 'lower': return 'Lower terrain';
-    case 'raise-water': return 'Raise water';
-    case 'lower-water': return 'Lower water';
-    case 'paint-terrain': return 'Paint terrain';
-  }
+  if (!value) return 'Not saved yet';
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
 
 function getLoadedTileCount(dimension: DimensionState): number {
   return Object.keys(dimension.tiles).length;
 }
 
+function saveStatusLabel(status: SaveStatus, lastSavedAt: string | null): string {
+  switch (status) {
+    case 'loading':  return 'Loading...';
+    case 'saving':   return 'Saving...';
+    case 'saved':    return `Saved ${formatTimestamp(lastSavedAt)}`;
+    case 'error':    return 'Save error';
+    default:         return 'Unsaved';
+  }
+}
+
+// ─── New World dialog state ───────────────────────────────────────────────────
+interface NewWorldDialogState {
+  open: boolean;
+  name: string;
+}
+
+// ─── About dialog ─────────────────────────────────────────────────────────────
+interface AboutDialogState { open: boolean; }
+
 export default function App() {
   const worldFileInputRef = useRef<HTMLInputElement | null>(null);
   const projectRef = useRef<ProjectState | null>(null);
+
   const [project, setProject] = useState<ProjectState | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('loading');
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState('Loading local project state...');
-  const [importStatusMessage, setImportStatusMessage] = useState('No desktop .world file inspected yet.');
-  const [worldFileProbe, setWorldFileProbe] = useState<WorldFileProbeResult | null>(null);
+  const [statusMessage, setStatusMessage] = useState('Loading...');
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({
     tool: 'raise',
     radius: 10,
     strength: 4,
     paintTerrain: TERRAIN_CODES.grass,
+    flattenLevel: 64,
   });
-  const [brushStatusMessage, setBrushStatusMessage] = useState('Left drag sculpts terrain. Right drag pans. Mouse wheel zooms.');
   const [historyPast, setHistoryPast] = useState<HistoryEntry[]>([]);
   const [historyFuture, setHistoryFuture] = useState<HistoryEntry[]>([]);
+  const [cursorWorldX, setCursorWorldX] = useState<number | null>(null);
+  const [cursorWorldY, setCursorWorldY] = useState<number | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [newWorldDialog, setNewWorldDialog] = useState<NewWorldDialogState>({ open: false, name: '' });
+  const [aboutDialog, setAboutDialog] = useState<AboutDialogState>({ open: false });
 
-  useEffect(() => {
-    projectRef.current = project;
-  }, [project]);
+  useEffect(() => { projectRef.current = project; }, [project]);
 
+  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-
     loadLastProject()
-      .then((savedProject) => {
-        if (cancelled) {
-          return;
-        }
-
-        if (savedProject) {
-          projectRef.current = savedProject;
-          setProject(savedProject);
+      .then((saved) => {
+        if (cancelled) return;
+        if (saved) {
+          projectRef.current = saved;
+          setProject(saved);
           setSaveStatus('saved');
-          setLastSavedAt(savedProject.updatedAt);
-          setStatusMessage('Restored your last browser-local project snapshot.');
+          setLastSavedAt(saved.updatedAt);
+          setStatusMessage('Restored last project snapshot.');
           return;
         }
-
-        const demoProject = createDemoProject();
-  projectRef.current = demoProject;
-        setProject(demoProject);
+        const demo = createDemoProject();
+        projectRef.current = demo;
+        setProject(demo);
         setSaveStatus('idle');
-        setStatusMessage('Created a generated draft project to exercise the canonical model and worker renderer.');
+        setStatusMessage('New demo project created.');
       })
-      .catch((error: unknown) => {
-        if (cancelled) {
-          return;
-        }
-
-        const recoveryProject = createDemoProject('Recovery Draft');
-        projectRef.current = recoveryProject;
-        setProject(recoveryProject);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const recovery = createDemoProject('Recovery Draft');
+        projectRef.current = recovery;
+        setProject(recovery);
         setSaveStatus('error');
-        setStatusMessage(error instanceof Error ? error.message : 'Failed to restore local project state.');
+        setStatusMessage(err instanceof Error ? err.message : 'Failed to restore project.');
       });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
+  // ── Autosave ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (!project) {
-      return;
-    }
-
-    setSaveStatus((current) => (current === 'loading' ? current : 'saving'));
+    if (!project) return;
+    setSaveStatus((s) => (s === 'loading' ? s : 'saving'));
     const timer = window.setTimeout(() => {
       saveProjectSnapshot(project)
-        .then((savedAt) => {
-          setLastSavedAt(savedAt);
-          setSaveStatus('saved');
-        })
-        .catch((error: unknown) => {
+        .then((savedAt) => { setLastSavedAt(savedAt); setSaveStatus('saved'); })
+        .catch((err: unknown) => {
           setSaveStatus('error');
-          setStatusMessage(error instanceof Error ? error.message : 'Autosave failed.');
+          setStatusMessage(err instanceof Error ? err.message : 'Autosave failed.');
         });
     }, 700);
-
     return () => window.clearTimeout(timer);
   }, [project]);
 
-  const activeDimension = useMemo(() => {
-    if (!project) {
-      return null;
-    }
+  const activeDimension = useMemo(
+    () => (project ? getActiveDimension(project) : null),
+    [project],
+  );
 
-    return getActiveDimension(project);
-  }, [project]);
+  const dimensionList = useMemo(
+    () => Object.values(project?.dimensions ?? {}),
+    [project],
+  );
 
-  const compatibilitySummary = project?.compatibility.notes ?? [];
-  const dimensionList = useMemo(() => Object.values(project?.dimensions ?? {}), [project]);
-  const activeDimensionTileCount = activeDimension ? getLoadedTileCount(activeDimension) : 0;
-  const hasEditableTiles = activeDimensionTileCount > 0;
-  const activeImportedMetadata = activeDimension?.importMetadata;
+  const hasEditableTiles = activeDimension ? getLoadedTileCount(activeDimension) > 0 : false;
 
-  useEffect(() => {
-    if (!activeDimension) {
-      return;
-    }
-
-    setBrushStatusMessage(
-      getLoadedTileCount(activeDimension) > 0
-        ? 'Left drag sculpts terrain. Right drag pans. Mouse wheel zooms.'
-        : 'This dimension has no decoded tile payload yet, so terrain editing is disabled.',
-    );
-  }, [activeDimension?.id, hasEditableTiles]);
-
-  async function handleManualSave() {
-    if (!project) {
-      return;
-    }
-
-    setSaveStatus('saving');
-
-    try {
-      const savedAt = await saveProjectSnapshot(project);
-      setLastSavedAt(savedAt);
-      setSaveStatus('saved');
-      setStatusMessage('Snapshot saved to IndexedDB.');
-    } catch (error) {
-      setSaveStatus('error');
-      setStatusMessage(error instanceof Error ? error.message : 'Snapshot save failed.');
-    }
-  }
-
-  function handleNewDraft() {
-    const draftProject = createDemoProject(`Draft ${new Date().toLocaleTimeString()}`);
-    projectRef.current = draftProject;
-    setProject(draftProject);
-    setHistoryPast([]);
-    setHistoryFuture([]);
-    setSaveStatus('idle');
-    setStatusMessage('Started a fresh generated draft project.');
-  }
-
-  function handleDownloadWorldFile() {
-    if (!project) {
-      return;
-    }
-
-    try {
-      const exportedFile = exportPatchedWorldFile(project);
-      const blobBuffer = new ArrayBuffer(exportedFile.bytes.byteLength);
-      new Uint8Array(blobBuffer).set(exportedFile.bytes);
-      const objectUrl = URL.createObjectURL(new Blob([blobBuffer], { type: 'application/gzip' }));
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = exportedFile.fileName;
-      anchor.click();
-      URL.revokeObjectURL(objectUrl);
-      setStatusMessage(`Downloaded ${exportedFile.fileName} with patched height data across ${exportedFile.patchedTileCount} imported tiles.`);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Patched .world export failed.');
-    }
-  }
-
-  function handleExportToMinecraft() {
-    if (!project) {
-      return;
-    }
-
-    try {
-      const exported = exportMinecraftWorld(project);
-      const blobBuffer = new ArrayBuffer(exported.bytes.byteLength);
-      new Uint8Array(blobBuffer).set(exported.bytes);
-      const objectUrl = URL.createObjectURL(new Blob([blobBuffer], { type: 'application/zip' }));
-      const anchor = document.createElement('a');
-      anchor.href = objectUrl;
-      anchor.download = exported.fileName;
-      anchor.click();
-      URL.revokeObjectURL(objectUrl);
-      setStatusMessage(`Downloaded ${exported.fileName}: ${exported.chunkCount} chunks across ${exported.regionCount} region file${exported.regionCount === 1 ? '' : 's'}. Extract and open in Minecraft 1.17.1.`);
-    } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : 'Minecraft export failed.');
-    }
-  }
-
-  function handleActivateDimension(dimensionId: string) {
-    const currentProject = projectRef.current;
-    if (!currentProject || currentProject.activeDimensionId === dimensionId) {
-      return;
-    }
-
-    const nextDimension = currentProject.dimensions[dimensionId];
-    if (!nextDimension) {
-      return;
-    }
-
-    const nextProject: ProjectState = {
-      ...currentProject,
-      activeDimensionId: dimensionId,
-      updatedAt: new Date().toISOString(),
-    };
-
-    projectRef.current = nextProject;
-    setProject(nextProject);
-    setStatusMessage(`Switched to ${nextDimension.name}.`);
-  }
-
+  // ── Undo / Redo ───────────────────────────────────────────────────────────
   const handleUndo = useCallback(() => {
-    const currentProject = projectRef.current;
+    const cur = projectRef.current;
     setHistoryPast((past) => {
-      if (past.length === 0 || !currentProject) {
-        return past;
-      }
-
+      if (past.length === 0 || !cur) return past;
       const entry = past[past.length - 1];
-      const nextProject = applyUndoEntry(currentProject, entry);
-      projectRef.current = nextProject;
-      setProject(nextProject);
-      setHistoryFuture((future) => [entry, ...future]);
-      setBrushStatusMessage('Undo applied.');
+      const next = applyUndoEntry(cur, entry);
+      projectRef.current = next;
+      setProject(next);
+      setHistoryFuture((f) => [entry, ...f]);
+      setStatusMessage('Undo applied.');
       return past.slice(0, -1);
     });
   }, []);
 
   const handleRedo = useCallback(() => {
-    const currentProject = projectRef.current;
+    const cur = projectRef.current;
     setHistoryFuture((future) => {
-      if (future.length === 0 || !currentProject) {
-        return future;
-      }
-
+      if (future.length === 0 || !cur) return future;
       const entry = future[0];
-      const nextProject = applyRedoEntry(currentProject, entry);
-      projectRef.current = nextProject;
-      setProject(nextProject);
-      setHistoryPast((past) => {
-        const next = [...past, entry];
-        return next.length > MAX_HISTORY_SIZE ? next.slice(next.length - MAX_HISTORY_SIZE) : next;
+      const next = applyRedoEntry(cur, entry);
+      projectRef.current = next;
+      setProject(next);
+      setHistoryPast((p) => {
+        const n = [...p, entry];
+        return n.length > MAX_HISTORY_SIZE ? n.slice(n.length - MAX_HISTORY_SIZE) : n;
       });
-      setBrushStatusMessage('Redo applied.');
+      setStatusMessage('Redo applied.');
       return future.slice(1);
     });
   }, []);
 
   useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (!(event.ctrlKey || event.metaKey)) {
-        return;
-      }
-
-      if (event.key === 'z' && !event.shiftKey) {
-        event.preventDefault();
-        handleUndo();
-      } else if (event.key === 'y' || (event.key === 'z' && event.shiftKey)) {
-        event.preventDefault();
-        handleRedo();
-      }
+    function onKey(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); }
+      else if (e.key === 'y' || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); }
     }
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, [handleUndo, handleRedo]);
 
+  // ── Brush application ─────────────────────────────────────────────────────
   function handleApplyBrush(worldX: number, worldY: number) {
-    const currentProject = projectRef.current;
-    if (!currentProject) {
-      return;
-    }
+    const cur = projectRef.current;
+    if (!cur) return;
+    const result = applyBrushToProject(cur, cur.activeDimensionId, { worldX, worldY }, brushSettings);
+    if (result.project === cur) return;
 
-    const result = applyBrushToProject(currentProject, currentProject.activeDimensionId, {
-      worldX,
-      worldY,
-    }, brushSettings);
-
-    if (result.project === currentProject) {
-      return;
-    }
-
-    // Capture before/after tile states for undo.
-    const dimensionId = currentProject.activeDimensionId;
-    const oldDimension = currentProject.dimensions[dimensionId];
-    if (oldDimension && result.changedTileKeys.length > 0) {
+    const dimId = cur.activeDimensionId;
+    const oldDim = cur.dimensions[dimId];
+    if (oldDim && result.changedTileKeys.length > 0) {
       const tilesBefore: HistoryEntry['tilesBefore'] = {};
       const tilesAfter: HistoryEntry['tilesAfter'] = {};
       for (const key of result.changedTileKeys) {
-        if (oldDimension.tiles[key]) {
-          tilesBefore[key] = oldDimension.tiles[key];
-        }
-        const nextTile = result.project.dimensions[dimensionId]?.tiles[key];
-        if (nextTile) {
-          tilesAfter[key] = nextTile;
-        }
+        if (oldDim.tiles[key]) tilesBefore[key] = oldDim.tiles[key];
+        const t = result.project.dimensions[dimId]?.tiles[key];
+        if (t) tilesAfter[key] = t;
       }
-      const entry: HistoryEntry = { dimensionId, tilesBefore, tilesAfter };
-      setHistoryPast((past) => {
-        const next = [...past, entry];
-        return next.length > MAX_HISTORY_SIZE ? next.slice(next.length - MAX_HISTORY_SIZE) : next;
+      setHistoryPast((p) => {
+        const n = [...p, { dimensionId: dimId, tilesBefore, tilesAfter }];
+        return n.length > MAX_HISTORY_SIZE ? n.slice(n.length - MAX_HISTORY_SIZE) : n;
       });
       setHistoryFuture([]);
     }
 
     projectRef.current = result.project;
     setProject(result.project);
-    setBrushStatusMessage(
-      `${formatBrushToolLabel(brushSettings.tool)} updated ${result.changedSampleCount} samples across ${result.changedTileCount} tile${result.changedTileCount === 1 ? '' : 's'}.`,
-    );
+    setStatusMessage(`${brushSettings.tool}: ${result.changedSampleCount} samples in ${result.changedTileCount} tile(s).`);
   }
 
-  function handleOpenWorldFilePicker() {
-    worldFileInputRef.current?.click();
+  // ── File actions ──────────────────────────────────────────────────────────
+  function handleNewWorld() {
+    setNewWorldDialog({ open: true, name: `My World ${new Date().toLocaleDateString()}` });
   }
 
-  async function handleWorldFileSelected(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
+  function handleConfirmNewWorld() {
+    const name = newWorldDialog.name.trim() || 'New World';
+    const p = createDemoProject(name);
+    projectRef.current = p;
+    setProject(p);
+    setHistoryPast([]);
+    setHistoryFuture([]);
+    setSaveStatus('idle');
+    setStatusMessage(`Created "${name}".`);
+    setNewWorldDialog({ open: false, name: '' });
+  }
 
-    if (!file) {
-      return;
+  function handleOpenWorld() { worldFileInputRef.current?.click(); }
+
+  async function handleSaveWorld() {
+    if (!project) return;
+    setSaveStatus('saving');
+    try {
+      const savedAt = await saveProjectSnapshot(project);
+      setLastSavedAt(savedAt);
+      setSaveStatus('saved');
+      setStatusMessage('Saved to browser storage.');
+    } catch (e) {
+      setSaveStatus('error');
+      setStatusMessage(e instanceof Error ? e.message : 'Save failed.');
     }
+  }
 
-    setImportStatusMessage(`Inspecting ${file.name}...`);
-    setWorldFileProbe(null);
+  function handleDownloadWorldFile() {
+    if (!project) return;
+    try {
+      const exported = exportPatchedWorldFile(project);.buffer as ArrayBuffer], { type: 'application/gzip' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = exported.fileName; a.click();
+      URL.revokeObjectURL(url);
+      setStatusMessage(`Downloaded ${exported.fileName} (${exported.patchedTileCount} tiles patched).`);
+    } catch (e) {
+      setStatusMessage(e instanceof Error ? e.message : '.world export failed.');
+    }
+  }
 
+  function handleExportMinecraft() {
+    if (!project) return;
+    try {
+      const exported = exportMinecraftWorld(project);
+      const url = URL.createObjectURL(new Blob([exported.bytes.buffer as ArrayBuffer
+      const url = URL.createObjectURL(new Blob([exported.bytes.buffer as ArrayBuffer], { type: 'application/zip' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = exported.fileName; a.click();
+      URL.revokeObjectURL(url);
+      setStatusMessage(`Exported ${exported.fileName}: ${exported.chunkCount} chunks in ${exported.regionCount} region(s).`);
+    } catch (e) {
+      setStatusMessage(e instanceof Error ? e.message : 'Minecraft export failed.');
+    }
+  }
+
+  async function handleWorldFileSelected(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setStatusMessage(`Opening ${file.name}...`);
     try {
       const probe = await probeWorldFile(file);
-      setWorldFileProbe(probe);
-
       if (probe.status === 'recognized') {
-        const importedName = probe.worldSummary?.name ?? probe.metadata?.name;
-        const importedLabel = importedName ? ` ${importedName}` : '';
-        const importedProject = createImportedProject(probe);
-
-        if (importedProject) {
-          const importedTileCount = probe.worldSummary?.dimensions.reduce((count, dimension) => count + dimension.tiles.length, 0) ?? 0;
-          projectRef.current = importedProject;
-          setProject(importedProject);
+        const imported = createImportedProject(probe);
+        if (imported) {
+          const tileCount = probe.worldSummary?.dimensions.reduce((c, d) => c + d.tiles.length, 0) ?? 0;
+          projectRef.current = imported;
+          setProject(imported);
           setHistoryPast([]);
           setHistoryFuture([]);
-          setLastSavedAt(importedProject.updatedAt);
+          setLastSavedAt(imported.updatedAt);
           setSaveStatus('idle');
-          setStatusMessage(
-            importedTileCount > 0
-              ? `Loaded a browser-local imported project with ${importedTileCount} decoded tiles from the desktop .world file.`
-              : 'Loaded a browser-local imported project shell from the desktop .world summary.',
-          );
+          setStatusMessage(`Opened ${probe.worldSummary?.name ?? file.name} (${tileCount} tiles).`);
+        } else {
+          setStatusMessage(`Opened ${file.name} but no editable tile data found.`);
         }
-
-        setImportStatusMessage(`Recognized desktop WorldPainter container for${importedLabel}.`);
-      } else if (probe.status === 'partial') {
-        setImportStatusMessage('Recognized the container format, but parsing only reached a partial compatibility report.');
       } else {
-        setImportStatusMessage('The selected file does not currently look like a supported WorldPainter .world container.');
+        setStatusMessage(`Could not recognise ${file.name} as a WorldPainter .world file.`);
       }
-    } catch (error) {
-      setImportStatusMessage(error instanceof Error ? error.message : 'World file inspection failed.');
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : 'Failed to open file.');
     }
+  }
+
+  function handleActivateDimension(dimId: string) {
+    const cur = projectRef.current;
+    if (!cur || cur.activeDimensionId === dimId) return;
+    const dim = cur.dimensions[dimId];
+    if (!dim) return;
+    const next: ProjectState = { ...cur, activeDimensionId: dimId, updatedAt: new Date().toISOString() };
+    projectRef.current = next;
+    setProject(next);
+    setStatusMessage(`Switched to ${dim.name}.`);
+  }
+
+  // ── Cursor tracking from Viewport ─────────────────────────────────────────
+  function handleViewportCursorMove(worldX: number, worldY: number) {
+    setCursorWorldX(worldX);
+    setCursorWorldY(worldY);
+  }
+
+  function handleViewportCursorLeave() {
+    setCursorWorldX(null);
+    setCursorWorldY(null);
   }
 
   if (!project || !activeDimension) {
     return <div className="app-loading">Preparing WorldPainterWeb...</div>;
   }
 
+  const canSave = saveStatus !== 'loading';
+  const canDownload = project ? canExportPatchedWorldFile(project) : false;
+  const canExport  = project ? canExportMinecraftWorld(project) : false;
+
   return (
-    <div className="app-shell">
-      <header className="app-header">
-        <div>
-          <p className="eyebrow">WorldPainterWeb</p>
-          <h1>Browser-native terrain shell</h1>
-          <p className="subdued">
-            Canonical model, Web Worker rendering, local persistence, editable terrain with undo/redo, semantic .world import, height+water patch save, and first-pass Minecraft 1.17.1 export are in place. Layer-aware save and broader Minecraft biome/material fidelity remain the next workstreams.
-          </p>
-        </div>
-        <div className="header-actions">
-          <input
-            ref={worldFileInputRef}
-            className="visually-hidden-input"
-            type="file"
-            accept=".world,.gz,application/gzip"
-            onChange={handleWorldFileSelected}
-          />
-          <button className="ghost-button" type="button" onClick={handleOpenWorldFilePicker}>
-            Inspect .world File
-          </button>
-          <button className="ghost-button" type="button" onClick={handleNewDraft}>
-            New Draft
-          </button>
-          {canExportPatchedWorldFile(project) ? (
-            <button className="ghost-button" type="button" onClick={handleDownloadWorldFile}>
-              Download .world
-            </button>
-          ) : null}
-          {canExportMinecraftWorld(project) ? (
-            <button className="ghost-button" type="button" onClick={handleExportToMinecraft}>
-              Export to Minecraft
-            </button>
-          ) : null}
-          <button className="primary-button" type="button" onClick={handleManualSave}>
-            Save Snapshot
-          </button>
-        </div>
-      </header>
+    <div className="wp-root">
 
-      <main className="app-main">
-        <section className="app-sidebar">
-          <div className="sidebar-card accent-card">
-            <p className="card-label">Project</p>
-            <h2>{project.name}</h2>
-            <p>{statusMessage}</p>
-            <dl className="meta-list">
-              <div>
-                <dt>Source</dt>
-                <dd>{project.source}</dd>
-              </div>
-              <div>
-                <dt>Schema</dt>
-                <dd>v{project.schemaVersion}</dd>
-              </div>
-              <div>
-                <dt>Last saved</dt>
-                <dd>{formatTimestamp(lastSavedAt)}</dd>
-              </div>
-              <div>
-                <dt>Save state</dt>
-                <dd>{saveStatus}</dd>
-              </div>
-            </dl>
+      {/* ── Menu bar ── */}
+      <MenuBar
+        onNewWorld={handleNewWorld}
+        onOpenWorld={handleOpenWorld}
+        onSaveWorld={handleSaveWorld}
+        onDownloadWorldFile={handleDownloadWorldFile}
+        onExporWorld={canSave}
+        canDownloadWorldFile={canDownload}
+        canExportMinecrafoadWorldFile={canDownload}
+        canExportMinecraft={canExport}
+        canUndo={historyPast.length > 0}
+        canRedo={historyFuture.length > 0}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onAbout={() => setAboutDialog({ open: true })}
+      />
+
+      {/* Hidden file input */}
+      <input
+        ref={worldFileInputRef}
+        className="visually-hidden-input"
+        type="file"
+        accept=".world,.gz,application/gzip"
+        onChange={handleWorldFileSelected}
+      />
+
+      {/* ── Toolbar ── */}
+      <div className="wp-toolbar">
+        <button type="button" className="wp-tb-btn" title="New World" onClick={handleNewWorld}>📄</button>
+        <button type="button" className="wp-tb-btn" title="Open .world" onClick={handleOpenWorld}>📂</button>
+        <button type="button" className="wp-tb-btn" title="Save" disabled={!canSave} onClick={handleSaveWorld}>💾</button>
+        <div className="wp-toolbar-sep" />
+        <button type="button" className="wp-tb-btn" title="Undo (Ctrl+Z)" disabled={historyPast.length === 0} onClick={handleUndo}>↩</button>
+        <button type="button" className="wp-tb-btn" title="Redo (Ctrl+Y)" disabled={historyFuture.length === 0} onClick={handleRedo}>↪</button>
+        <div className="wp-toolbar-sep" />
+        {canDownload && <button type="button" className="wp-tb-btn" title="Download .world" onClick={handleDownloadWorldFile}>⬇</button>}
+        {canExport  && <button type="button" className="wp-tb-btn" title="Export to Minecraft" onClick={handleExportMinecraft}>⚡</button>}
+      </div>
+
+      {/* ── Workspace ── */}
+      <div className="wp-workspace">
+
+        {/* Left: tool panel */}
+        <ToolPanel
+          activeTool={brushSettings.tool}
+          onSelectTool={(tool) => setBrushSettings((s) => ({ ...s, tool }))}
+        />
+
+        {/* Centre: viewport */}
+        <div className="wp-viewport-area">
+          {/* Dimension tabs */}
+          <div className="wp-viewport-topbar">
+            {dimensionList.map((dim) => (
+              <button
+                key={dim.id}
+                type="button"
+                className={`wp-dim-tab${dim.id === activeDimension.id ? ' active' : ''}`}
+                onClick={() => handleActivateDimension(dim.id)}
+              >
+                {dim.name}
+              </button>
+            ))}
           </div>
-
-          <div className="sidebar-card">
-            <p className="card-label">Compatibility workstream</p>
-            <h2>Adapter status</h2>
-            <div className="status-grid">
-              <span>Read .world</span>
-              <strong>{project.compatibility.readSupport}</strong>
-              <span>Write .world</span>
-              <strong>{project.compatibility.writeSupport}</strong>
-              <span>Export world</span>
-              <strong>{project.compatibility.exportSupport}</strong>
-            </div>
-            <ul className="note-list">
-              {compatibilitySummary.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="sidebar-card">
-            <p className="card-label">Terrain brush</p>
-            <h2>{formatBrushToolLabel(brushSettings.tool)}</h2>
-            <p>{brushStatusMessage}</p>
-            <div className="segmented-control" role="tablist" aria-label="Terrain brush tool">
-              <button
-                className={`segmented-button ${brushSettings.tool === 'raise' ? 'active' : ''}`}
-                type="button"
-                onClick={() => setBrushSettings((current) => ({ ...current, tool: 'raise' }))}
-              >
-                Raise
-              </button>
-              <button
-                className={`segmented-button ${brushSettings.tool === 'lower' ? 'active' : ''}`}
-                type="button"
-                onClick={() => setBrushSettings((current) => ({ ...current, tool: 'lower' }))}
-              >
-                Lower
-              </button>
-              <button
-                className={`segmented-button ${brushSettings.tool === 'raise-water' ? 'active' : ''}`}
-                type="button"
-                onClick={() => setBrushSettings((current) => ({ ...current, tool: 'raise-water' }))}
-              >
-                Water +
-              </button>
-              <button
-                className={`segmented-button ${brushSettings.tool === 'lower-water' ? 'active' : ''}`}
-                type="button"
-                onClick={() => setBrushSettings((current) => ({ ...current, tool: 'lower-water' }))}
-              >
-                Water −
-              </button>
-              <button
-                className={`segmented-button segmented-button-wide ${brushSettings.tool === 'paint-terrain' ? 'active' : ''}`}
-                type="button"
-                onClick={() => setBrushSettings((current) => ({ ...current, tool: 'paint-terrain' }))}
-              >
-                Paint terrain
-              </button>
-            </div>
-            {brushSettings.tool === 'paint-terrain' ? (
-              <div className="terrain-palette" role="radiogroup" aria-label="Terrain to paint">
-                {([
-                  [TERRAIN_CODES.grass, 'Grass', '#58824e'],
-                  [TERRAIN_CODES.sand, 'Sand', '#c9b274'],
-                  [TERRAIN_CODES.stone, 'Stone', '#7a7670'],
-                  [TERRAIN_CODES.snow, 'Snow', '#ebf0f2'],
-                  [TERRAIN_CODES.water, 'Water', '#3670aa'],
-                ] as Array<[TerrainCode, string, string]>).map(([code, label, color]) => (
-                  <button
-                    key={code}
-                    className={`terrain-swatch ${brushSettings.paintTerrain === code ? 'active' : ''}`}
-                    type="button"
-                    title={label}
-                    aria-label={label}
-                    style={{ '--swatch-color': color } as React.CSSProperties}
-                    onClick={() => setBrushSettings((current) => ({ ...current, paintTerrain: code }))}
-                  />
-                ))}
-              </div>
-            ) : null}
-            <div className="undo-redo-row">
-              <button
-                className="ghost-button"
-                type="button"
-                disabled={historyPast.length === 0}
-                onClick={handleUndo}
-                title="Undo last brush stroke (Ctrl+Z)"
-              >
-                Undo
-              </button>
-              <button
-                className="ghost-button"
-                type="button"
-                disabled={historyFuture.length === 0}
-                onClick={handleRedo}
-                title="Redo brush stroke (Ctrl+Y / Ctrl+Shift+Z)"
-              >
-                Redo
-              </button>
-              <span className="undo-count">
-                {historyPast.length > 0 ? `${historyPast.length} step${historyPast.length === 1 ? '' : 's'}` : ''}
-              </span>
-            </div>
-            <label className="range-field" htmlFor="brush-radius">
-              <span>Brush radius</span>
-              <strong>{brushSettings.radius}</strong>
-            </label>
-            <input
-              id="brush-radius"
-              type="range"
-              min="2"
-              max="48"
-              step="1"
-              value={brushSettings.radius}
-              onChange={(event) => setBrushSettings((current) => ({ ...current, radius: Number(event.target.value) }))}
+          <div className="wp-viewport-stage">
+            <Viewport
+              dimension={activeDimension}
+              brushSettings={brushSettings}
+              editable={hasEditableTiles}
+              onApplyBrush={handleApplyBrush}
+              onZoomChange={setZoom}
+              onCursorMove={handleViewportCursorMove}
+              onCursorLeave={handleViewportCursorLeave}
             />
-            <label className="range-field" htmlFor="brush-strength">
-              <span>Brush strength</span>
-              <strong>{brushSettings.strength}</strong>
-            </label>
-            <input
-              id="brush-strength"
-              type="range"
-              min="1"
-              max="16"
-              step="1"
-              value={brushSettings.strength}
-              onChange={(event) => setBrushSettings((current) => ({ ...current, strength: Number(event.target.value) }))}
-            />
-            <p className="helper-text">
-              {hasEditableTiles
-                ? 'Brush edits update the canonical model. Undo/redo (Ctrl+Z / Ctrl+Y) preserves up to 50 steps. Imported worlds export patched heights and water levels back into the original .world container.'
-                : 'Inspect mode only. This dimension does not currently contain editable tile payload.'}
-            </p>
           </div>
+        </div>
 
-          <div className="sidebar-card">
-            <p className="card-label">Import inspection</p>
-            <h2>{worldFileProbe?.worldSummary?.name ?? worldFileProbe?.metadata?.name ?? worldFileProbe?.fileName ?? 'Desktop .world probe'}</h2>
-            <p>{importStatusMessage}</p>
-            {worldFileProbe ? (
-              <>
-                <dl className="meta-list compact-meta-list">
-                  <div>
-                    <dt>Compression</dt>
-                    <dd>{worldFileProbe.compression}</dd>
-                  </div>
-                  <div>
-                    <dt>Serialization</dt>
-                    <dd>{worldFileProbe.serialization}</dd>
-                  </div>
-                  <div>
-                    <dt>Status</dt>
-                    <dd>{worldFileProbe.status}</dd>
-                  </div>
-                  <div>
-                    <dt>Root class</dt>
-                    <dd>{worldFileProbe.worldRootClass ?? 'unknown'}</dd>
-                  </div>
-                  <div>
-                    <dt>File size</dt>
-                    <dd>{(worldFileProbe.fileSize / 1024).toFixed(1)} KB</dd>
-                  </div>
-                  <div>
-                    <dt>Platform</dt>
-                    <dd>{worldFileProbe.worldSummary?.platformName ?? worldFileProbe.worldSummary?.platformId ?? 'unknown'}</dd>
-                  </div>
-                  <div>
-                    <dt>Height range</dt>
-                    <dd>{formatHeightRange(worldFileProbe.worldSummary?.minHeight ?? null, worldFileProbe.worldSummary?.maxHeight ?? null)}</dd>
-                  </div>
-                  <div>
-                    <dt>Spawn point</dt>
-                    <dd>{formatPointSummary(worldFileProbe.worldSummary?.spawnPoint ?? null)}</dd>
-                  </div>
-                  <div>
-                    <dt>Dimensions</dt>
-                    <dd>{worldFileProbe.worldSummary?.dimensions.length ?? 0}</dd>
-                  </div>
-                  <div>
-                    <dt>Saved with</dt>
-                    <dd>
-                      {worldFileProbe.metadata?.wpVersion
-                        ? worldFileProbe.metadata.wpBuild
-                          ? `${worldFileProbe.metadata.wpVersion} (${worldFileProbe.metadata.wpBuild})`
-                          : worldFileProbe.metadata.wpVersion
-                        : 'unknown'}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Timestamp</dt>
-                    <dd>{formatTimestamp(worldFileProbe.metadata?.timestamp ?? null)}</dd>
-                  </div>
-                  <div>
-                    <dt>Plugins</dt>
-                    <dd>{worldFileProbe.metadata?.plugins.length ?? 0}</dd>
-                  </div>
-                </dl>
+        {/* Right: layers panel */}
+        <LayersPanel
+          project={project}
+          activeDimension={activeDimension}
+          onActivateDimension={handleActivateDimension}
+        />
+      </div>
 
-                {worldFileProbe.worldSummary?.dimensions.length ? (
-                  <>
-                    <p className="card-label">Dimension summary</p>
-                    <ul className="note-list plugin-list">
-                      {worldFileProbe.worldSummary.dimensions.map((dimension) => (
-                        <li key={`${dimension.anchor?.dim ?? 'x'}-${dimension.anchor?.role ?? 'unknown'}-${dimension.anchor?.invert ?? false}-${dimension.anchor?.id ?? 0}`}>
-                          {formatDimensionLabel(dimension)}
-                          {' · '}
-                          {dimension.tileCount ?? 0} tiles
-                          {' · bounds '}
-                          {formatTileBounds(dimension)}
-                          {' · height '}
-                          {formatHeightRange(dimension.minHeight, dimension.maxHeight)}
-                          {' · settings '}
-                          {dimension.layerSettings.length}
-                          {' · layer buffers '}
-                          {dimension.tileLayerBufferCount + dimension.tileBitLayerBufferCount}
-                          {' · seeds '}
-                          {dimension.seedCount}
-                        </li>
-                      ))}
-                    </ul>
-                  </>
-                ) : null}
+      {/* ── Brush options panel ── */}
+      <BrushOptionsPanel
+        brushSettings={brushSettings}
+        onChangeBrush={setBrushSettings}
+        canUndo={historyPast.length > 0}
+        canRedo={historyFuture.length > 0}
+        undoCount={historyPast.length}
+        redoCount={historyFuture.length}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+      />
 
-                {worldFileProbe.metadata?.plugins.length ? (
-                  <ul className="note-list plugin-list">
-                    {worldFileProbe.metadata.plugins.map((plugin) => (
-                      <li key={`${plugin.name}-${plugin.version}`}>
-                        {plugin.name} ({plugin.version})
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
+      {/* ── Status bar ── */}
+      <StatusBar
+        message={statusMessage}
+        worldX={cursorWorldX}
+        worldY={cursorWorldY}
+        zoom={zoom}
+        saveStatus={saveStatusLabel(saveStatus, lastSavedAt)}
+      />
 
-                <ul className="note-list">
-                  {worldFileProbe.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
-          </div>
-
-          <div className="sidebar-card">
-            <p className="card-label">Dimension</p>
-            <h2>{activeDimension.name}</h2>
-            <div className="dimension-list" role="tablist" aria-label="Project dimensions">
-              {dimensionList.map((dimension) => {
-                const loadedTileCount = getLoadedTileCount(dimension);
-
-                return (
-                  <button
-                    key={dimension.id}
-                    className={`dimension-button ${dimension.id === activeDimension.id ? 'active' : ''}`}
-                    type="button"
-                    onClick={() => handleActivateDimension(dimension.id)}
-                  >
-                    <strong>{dimension.name}</strong>
-                    <span>{loadedTileCount} loaded tiles</span>
-                  </button>
-                );
-              })}
+      {/* ── New World dialog ── */}
+      {newWorldDialog.open && (
+        <div className="wp-dialog-overlay" onClick={() => setNewWorldDialog((s) => ({ ...s, open: false }))}>
+          <div className="wp-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="wp-dialog-title">
+              <span>New World</span>
+              <button type="button" className="wp-btn-small" onClick={() => setNewWorldDialog((s) => ({ ...s, open: false }))}>✕</button>
             </div>
-            <dl className="meta-list">
-              <div>
-                <dt>Tile size</dt>
-                <dd>{activeDimension.tileSize}</dd>
+            <div className="wp-dialog-body">
+              <div className="wp-dialog-row">
+                <label htmlFor="nw-name">World name</label>
+                <input
+                  id="nw-name"
+                  className="wp-input"
+                  value={newWorldDialog.name}
+                  onChange={(e) => setNewWorldDialog((s) => ({ ...s, name: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleConfirmNewWorld(); }}
+                  autoFocus
+                />
               </div>
-              <div>
-                <dt>Height range</dt>
-                <dd>{formatHeightRange(activeDimension.minHeight, activeDimension.maxHeight)}</dd>
-              </div>
-              <div>
-                <dt>Tile bounds</dt>
-                <dd>
-                  {activeDimension.minTileX},{activeDimension.minTileY} to {activeDimension.maxTileX},{activeDimension.maxTileY}
-                </dd>
-              </div>
-              <div>
-                <dt>Tile count</dt>
-                <dd>{activeDimensionTileCount}</dd>
-              </div>
-              {activeImportedMetadata ? (
-                <>
-                  <div>
-                    <dt>Dimension seed</dt>
-                    <dd>{formatNullableNumber(activeImportedMetadata.dimensionSeed)}</dd>
-                  </div>
-                  <div>
-                    <dt>Minecraft seed</dt>
-                    <dd>{formatNullableNumber(activeImportedMetadata.minecraftSeed)}</dd>
-                  </div>
-                  <div>
-                    <dt>Layer settings</dt>
-                    <dd>{activeImportedMetadata.layerSettings.length}</dd>
-                  </div>
-                  <div>
-                    <dt>Value layers</dt>
-                    <dd>{activeImportedMetadata.tileLayerBufferCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Bit layers</dt>
-                    <dd>{activeImportedMetadata.tileBitLayerBufferCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Garden seeds</dt>
-                    <dd>{activeImportedMetadata.seedCount}</dd>
-                  </div>
-                </>
-              ) : null}
-            </dl>
-            {activeImportedMetadata?.availableLayers.length ? (
-              <>
-                <p className="card-label">Preserved layers</p>
-                <ul className="note-list">
-                  {activeImportedMetadata.availableLayers.slice(0, 8).map((layer) => (
-                    <li key={`${layer.className}-${layer.id ?? layer.name ?? 'layer'}`}>
-                      {formatLayerLabel(layer)}
-                      {' · '}
-                      {layer.dataSize}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            ) : null}
+            </div>
+            <div className="wp-dialog-footer">
+              <button type="button" className="wp-btn-secondary" onClick={() => setNewWorldDialog((s) => ({ ...s, open: false }))}>Cancel</button>
+              <button type="button" className="wp-btn-primary" onClick={handleConfirmNewWorld}>Create</button>
+            </div>
           </div>
-        </section>
+        </div>
+      )}
 
-        <section className="app-content">
-          <Viewport
-            dimension={activeDimension}
-            brushSettings={brushSettings}
-            editable={hasEditableTiles}
-            onApplyBrush={handleApplyBrush}
-          />
-        </section>
-      </main>
+      {/* ── About dialog ── */}
+      {aboutDialog.open && (
+        <div className="wp-dialog-overlay" onClick={() => setAboutDialog({ open: false })}>
+          <div className="wp-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="wp-dialog-title">
+              <span>About WorldPainterWeb</span>
+              <button type="button" className="wp-btn-small" onClick={() => setAboutDialog({ open: false })}>✕</button>
+            </div>
+            <div className="wp-dialog-body" style={{ fontSize: 12, lineHeight: 1.6 }}>
+              <p><strong>WorldPainterWeb</strong> — a browser-native re-implementation of WorldPainter's terrain sculpting.</p>
+              <p>Features: Raise/Lower/Flatten/Smooth/Erode brushes, Paint Terrain, Undo/Redo (50 steps), .world import, patched .world export, Minecraft 1.17.1 export, IndexedDB autosave.</p>
+              <p style={{ color: 'var(--wp-text-dim)' }}>This is an independent open-source project and is not affiliated with the original WorldPainter desktop application.</p>
+            </div>
+            <div className="wp-dialog-footer">
+              <button type="button" className="wp-btn-secondary" onClick={() => setAboutDialog({ open: false })}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

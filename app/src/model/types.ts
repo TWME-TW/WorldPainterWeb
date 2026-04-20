@@ -1,15 +1,58 @@
 export const PROJECT_SCHEMA_VERSION = 1;
 export const TILE_SIZE = 128;
 
+/**
+ * Terrain code constants matching WorldPainter's Terrain enum ordinals.
+ * Used by classifyTerrain() and the paint-terrain brush.
+ * Note: legacy aliases (sand=1 etc.) were the original web-app values and
+ * are kept here for backward-compatibility with saved IndexedDB projects.
+ * New code should use the WP_* constants below.
+ */
 export const TERRAIN_CODES = {
+  // WorldPainter-correct ordinals
   grass: 0,
-  sand: 1,
-  stone: 2,
-  snow: 3,
-  water: 4,
+  dirt: 1,
+  sand: 2,
+  sandstone: 3,
+  stone: 4,
+  rock: 5,
+  water: 6,
+  lava: 7,
+  snowOnRock: 8,
+  deepSnow: 9,
+  gravel: 10,
+  clay: 11,
+  cobblestone: 12,
+  mossyCobblestone: 13,
+  netherrack: 14,
+  soulSand: 15,
+  obsidian: 16,
+  bedrock: 17,
+  desert: 18,
+  mycelium: 22,
+  endStone: 23,
+  bareGrass: 24,
+  coarseDirt: 25,
+  podzol: 26,
+  redSand: 27,
+  terracotta: 28,
+  mesa: 45,
+  granite: 48,
+  diorite: 49,
+  andesite: 50,
+
+  // Legacy aliases kept for backward-compat with old IndexedDB saves
+  /** @deprecated Use deepSnow (9) */
+  snow: 9,
+  /** @deprecated Use sand (2) */
+  sand_legacy: 1,
+  /** @deprecated Use stone (4) */
+  stone_legacy: 22,
+  /** @deprecated Use water (6) */
+  water_legacy: 4,
 } as const;
 
-export type TerrainCode = (typeof TERRAIN_CODES)[keyof typeof TERRAIN_CODES];
+export type TerrainCode = number;
 
 export interface CompatibilityStatus {
   readSupport: 'planned' | 'partial' | 'full';

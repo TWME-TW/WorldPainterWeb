@@ -1,18 +1,13 @@
 /// <reference lib="webworker" />
 
-import { TERRAIN_CODES } from '../model/types';
+import { TERRAIN_COLOUR_MAP } from '../model/terrainMetadata';
 import type {
   TileRenderWorkerRequest,
   TileRenderWorkerResponse,
 } from './renderTypes';
 
-const TERRAIN_COLOURS: Record<number, [number, number, number]> = {
-  [TERRAIN_CODES.grass]: [88, 130, 78],
-  [TERRAIN_CODES.sand]: [201, 178, 116],
-  [TERRAIN_CODES.stone]: [122, 118, 112],
-  [TERRAIN_CODES.snow]: [235, 240, 242],
-  [TERRAIN_CODES.water]: [54, 112, 170],
-};
+// Fallback colour (grass green) for any terrain code not in the map
+const FALLBACK_COLOUR: [number, number, number] = [88, 130, 78];
 
 function clampByte(value: number): number {
   return Math.min(255, Math.max(0, Math.round(value)));
@@ -31,7 +26,7 @@ function renderTile(request: TileRenderWorkerRequest): TileRenderWorkerResponse 
       const topHeight = heights[x + (y > 0 ? y - 1 : y) * tileSize];
       const slope = baseHeight - (leftHeight + topHeight) / 2;
       const brightness = 1 + slope * 0.04 + (baseHeight - 64) * 0.004;
-      const colour = TERRAIN_COLOURS[terrain[index]] ?? TERRAIN_COLOURS[TERRAIN_CODES.grass];
+      const colour = TERRAIN_COLOUR_MAP.get(terrain[index]) ?? FALLBACK_COLOUR;
       const hasWater = waterLevels[index] > baseHeight;
 
       let red = colour[0] * brightness;
